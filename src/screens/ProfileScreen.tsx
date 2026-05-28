@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity, Alert, ScrollView, ActivityIn
 import { signOut } from 'firebase/auth';
 import { auth, db } from '../services/firebase';
 import { useAuth } from '../contexts/AuthContext';
-import { doc, getDoc, collection, getDocs, query, orderBy, limit, deleteDoc, updateDoc } from 'firebase/firestore';
+import { doc, getDoc, collection, getDocs, query, orderBy, limit, deleteDoc, updateDoc, setDoc } from 'firebase/firestore';
 import { useFocusEffect } from '@react-navigation/native';
 
 export default function ProfileScreen() {
@@ -78,10 +78,10 @@ export default function ProfileScreen() {
             for (const receiptDoc of snap.docs) {
               await deleteDoc(receiptDoc.ref);
             }
-            await updateDoc(doc(db, 'users', user.uid), {
+            await setDoc(doc(db, 'users', user.uid), {
               totalSpentThisMonth: 0,
               ecoPoints: 0
-            });
+            }, { merge: true });
             Alert.alert('Success', 'History wiped! Your points and dashboard are reset.');
             setProfile((prev: any) => ({ ...prev, ecoPoints: 0, totalSpentThisMonth: 0 }));
           } catch (e) {

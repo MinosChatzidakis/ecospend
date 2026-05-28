@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert, ScrollView } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImageManipulator from 'expo-image-manipulator';
-import { doc, collection, addDoc, updateDoc, increment, getDocs, getDoc, query, where, collectionGroup } from 'firebase/firestore';
+import { doc, collection, addDoc, updateDoc, increment, getDocs, getDoc, query, where, collectionGroup, setDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -45,6 +45,7 @@ export default function ScannerScreen({ navigation }: any) {
 
     try {
       setScanning(true);
+      setScannedAadeUrl(null);
       setExtractedText('Capturing image...');
       
       // Reverting back to quality 0.5 and OCREngine 2 which worked better originally
@@ -89,13 +90,12 @@ export default function ScannerScreen({ navigation }: any) {
         return;
       }
       
-      if (!scannedAadeUrl) {
-        Alert.alert('Scan Failed', 'No valid AADE QR code was detected. Please ensure the QR code is clearly visible in the camera frame and try again.');
-        setScanning(false);
-        return;
+      if (scannedAadeUrl) {
+        setExtractedText('AADE QR Detected! Verifying signature...');
+      } else {
+        setExtractedText('No AADE QR found — receipt will be flagged. Processing items...');
       }
 
-      setExtractedText('AADE QR Detected! Verifying signature...');
       await new Promise(resolve => setTimeout(resolve, 800));
 
       await saveReceiptToFirebase(parsedText);
@@ -227,12 +227,12 @@ export default function ScannerScreen({ navigation }: any) {
     // Save the receipt
     const receiptsRef = collection(db, 'users', user.uid, 'receipts');
 
-    // Global Duplicate Check: Ensure NO user has ever scanned this QR code
+    // Duplicate Check: same user can't scan same receipt twice
     if (scannedAadeUrl) {
-      const q = query(collectionGroup(db, 'receipts'), where('aadeUrl', '==', scannedAadeUrl));
+      const q = query(receiptsRef, where('aadeUrl', '==', scannedAadeUrl));
       const existing = await getDocs(q);
       if (!existing.empty) {
-        Alert.alert('Duplicate Receipt', 'This receipt has already been claimed in the system! (Identical AADE QR)');
+        Alert.alert('Duplicate Receipt', 'You have already scanned this receipt!');
         return;
       }
     }
@@ -254,10 +254,10 @@ export default function ScannerScreen({ navigation }: any) {
 
     // Update user's total spent and points
     const userRef = doc(db, 'users', user.uid);
-    await updateDoc(userRef, {
+    await setDoc(userRef, {
       totalSpentThisMonth: increment(calculatedTotal),
       ecoPoints: increment(earnedPoints)
-    });
+    }, { merge: true });
 
     // --- CHECK FOR OVER BUDGET ALERTS ---
     try {
