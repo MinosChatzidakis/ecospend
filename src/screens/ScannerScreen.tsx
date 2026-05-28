@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert, ScrollView } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImageManipulator from 'expo-image-manipulator';
-import { doc, collection, addDoc, updateDoc, increment, getDocs, getDoc } from 'firebase/firestore';
+import { doc, collection, addDoc, updateDoc, increment, getDocs, getDoc, query, where, collectionGroup } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -21,6 +21,7 @@ export default function ScannerScreen({ navigation }: any) {
   const [scanning, setScanning] = useState(false);
   const [extractedText, setExtractedText] = useState('');
   const [torch, setTorch] = useState(false);
+  const [scannedAadeUrl, setScannedAadeUrl] = useState<string | null>(null);
   const cameraRef = useRef<any>(null);
   const { user } = useAuth();
 
@@ -88,11 +89,14 @@ export default function ScannerScreen({ navigation }: any) {
         return;
       }
       
-      setExtractedText('Verifying AADE receipt signature...');
-      await new Promise(resolve => setTimeout(resolve, 1200)); // Fake AADE verification delay
-      
-      setExtractedText('AADE Signature Verified! Matching items...');
-      await new Promise(resolve => setTimeout(resolve, 500));
+      if (!scannedAadeUrl) {
+        Alert.alert('Scan Failed', 'No valid AADE QR code was detected. Please ensure the QR code is clearly visible in the camera frame and try again.');
+        setScanning(false);
+        return;
+      }
+
+      setExtractedText('AADE QR Detected! Verifying signature...');
+      await new Promise(resolve => setTimeout(resolve, 800));
 
       await saveReceiptToFirebase(parsedText);
 
@@ -117,7 +121,6 @@ export default function ScannerScreen({ navigation }: any) {
     let matchedItems: any[] = [];
     let calculatedTotal = 0;
     let earnedPoints = 0;
-    const alreadyMatched = new Set<string>();
 
     for (let i = 0; i < lines.length; i++) {
       const originalLine = lines[i];
@@ -127,14 +130,13 @@ export default function ScannerScreen({ navigation }: any) {
       let bestMatch = null;
       const codeMatch = originalLine.match(/(\d{6})/);
       if (codeMatch) {
-        bestMatch = allProducts.find(p => p.productCode === codeMatch[1] && !alreadyMatched.has(p.name));
+        bestMatch = allProducts.find(p => p.productCode === codeMatch[1]);
       }
       
       // --- STEP 2: Fallback to fuzzy name match ---
       if (!bestMatch) {
         let topScore = 0;
         for (const p of allProducts) {
-          if (alreadyMatched.has(p.name)) continue;
           const pName = stripAccents(p.name);
           const pWords = pName.split(' ').filter(w => w.length >= 4);
           const oWords = line.split(' ').filter(w => w.length >= 4);
@@ -149,23 +151,31 @@ export default function ScannerScreen({ navigation }: any) {
       }
 
       if (!bestMatch) continue;
-      alreadyMatched.add(bestMatch.name);
 
       // --- STEP 3: Detect Quantity Multiplier ---
-      // Matches "2X", "2 X", "2ΤΜΧ", "2 TMX", "2 TEM", "2,000 TEM", etc.
+      // Handles: "2X", "2 X", "2ΤΜΧ", "ΤΕΜΧ2", "ΤΕΜ 2", "X2", "2 TEM", "TEMX 2", etc.
       let quantity = 1;
       
-      // 1. Check current line
-      let qtyMatch = originalLine.match(/\b([1-9](?:,\d+)?)\s*(?:X|ΤΜΧ|TMX|ΤΕΜ|TEM)\b/i);
+      const qtyPatterns = [
+        /(\d+)\s*[xXχΧ×]\b/,                          // 2X, 2x, 2 X
+        /[xXχΧ×]\s*(\d+)/,                             // X2, x2
+        /(\d+)\s*(?:ΤΜΧ|TMX|ΤΕΜΧ|TEMX|ΤΕΜ|TEM)/i,    // 2ΤΜΧ, 2ΤΕΜΧ, 2TEM
+        /(?:ΤΜΧ|TMX|ΤΕΜΧ|TEMX|ΤΕΜ|TEM)\s*(\d+)/i,    // ΤΕΜΧ2, TEM2, ΤΜΧ 2
+      ];
       
-      // 2. Check next line if not found
-      if (!qtyMatch && i + 1 < lines.length) {
-          qtyMatch = lines[i+1].match(/\b([1-9](?:,\d+)?)\s*(?:X|ΤΜΧ|TMX|ΤΕΜ|TEM)\b/i);
-      }
-
-      if (qtyMatch) {
-          // Parse "2,000" or "2" 
-          quantity = Math.round(parseFloat(qtyMatch[1].replace(',', '.')));
+      // Check current line, then next line
+      const linesToCheck = [originalLine];
+      if (i + 1 < lines.length) linesToCheck.push(lines[i+1]);
+      
+      for (const checkLine of linesToCheck) {
+        if (quantity > 1) break;
+        for (const pat of qtyPatterns) {
+          const m = checkLine.match(pat);
+          if (m && parseInt(m[1]) >= 2 && parseInt(m[1]) <= 99) {
+            quantity = parseInt(m[1]);
+            break;
+          }
+        }
       }
 
       // Always use DB price, multiplied by quantity
@@ -215,12 +225,25 @@ export default function ScannerScreen({ navigation }: any) {
     setExtractedText('Saving receipt to history...');
 
     // Save the receipt
-    const receiptRef = await addDoc(collection(db, 'users', user.uid, 'receipts'), {
+    const receiptsRef = collection(db, 'users', user.uid, 'receipts');
+
+    // Global Duplicate Check: Ensure NO user has ever scanned this QR code
+    if (scannedAadeUrl) {
+      const q = query(collectionGroup(db, 'receipts'), where('aadeUrl', '==', scannedAadeUrl));
+      const existing = await getDocs(q);
+      if (!existing.empty) {
+        Alert.alert('Duplicate Receipt', 'This receipt has already been claimed in the system! (Identical AADE QR)');
+        return;
+      }
+    }
+
+    const receiptRef = await addDoc(receiptsRef, {
       storeName: 'Scanned Supermarket',
       totalAmount: calculatedTotal,
       pointsEarned: earnedPoints,
       date: new Date(),
-      ecoScore: matchedItems.some(i => i.ecoRating === 'D' || i.ecoRating === 'C') ? 'C' : 'A'
+      ecoScore: matchedItems.some(i => i.ecoRating === 'D' || i.ecoRating === 'C') ? 'C' : 'A',
+      aadeUrl: scannedAadeUrl || null
     });
 
     // Save ACTUAL matched items to subcollection
@@ -235,6 +258,51 @@ export default function ScannerScreen({ navigation }: any) {
       totalSpentThisMonth: increment(calculatedTotal),
       ecoPoints: increment(earnedPoints)
     });
+
+    // --- CHECK FOR OVER BUDGET ALERTS ---
+    try {
+      const userSnap = await getDoc(userRef);
+      if (userSnap.exists()) {
+        const catBudgets = userSnap.data().categoryBudgets || {};
+        
+        // Only check if they actually set category budgets
+        if (Object.keys(catBudgets).length > 0) {
+          // Quickly calculate total category spending for this month
+          const receiptsSnap = await getDocs(collection(db, 'users', user.uid, 'receipts'));
+          let currentCatSpent: Record<string, number> = {};
+          
+          for (const rDoc of receiptsSnap.docs) {
+            const iSnap = await getDocs(collection(rDoc.ref, 'scanned_items'));
+            iSnap.forEach(iDoc => {
+              const d = iDoc.data();
+              const cat = d.category || 'Other';
+              currentCatSpent[cat] = (currentCatSpent[cat] || 0) + (d.price || 0);
+            });
+          }
+
+          // Check if any of the JUST SCANNED items pushed a category over budget
+          let exceededAlerts = [];
+          const uniqueCategoriesScanned = Array.from(new Set(matchedItems.map(i => i.category)));
+          
+          for (const cat of uniqueCategoriesScanned) {
+            if (catBudgets[cat] && currentCatSpent[cat] > catBudgets[cat]) {
+              exceededAlerts.push(cat);
+            }
+          }
+
+          if (exceededAlerts.length > 0) {
+            Alert.alert(
+              '⚠️ Budget Exceeded!', 
+              `You just went over your budget for:\n\n${exceededAlerts.join(', ')}\n\nMatched ${matchedItems.length} items and earned ${earnedPoints} EcoPoints!`,
+              [{ text: 'View Dashboard', onPress: () => navigation.navigate('Dashboard') }]
+            );
+            return; // Skip normal success alert
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Failed to check budget limits", err);
+    }
 
     Alert.alert('Success!', `Receipt scanned! Matched ${matchedItems.length} items and earned ${earnedPoints} EcoPoints!`, [
       { text: 'View Dashboard', onPress: () => navigation.navigate('Dashboard') }
@@ -292,7 +360,18 @@ export default function ScannerScreen({ navigation }: any) {
 
   return (
     <View style={styles.container}>
-      <CameraView style={styles.camera} facing="back" ref={cameraRef} enableTorch={torch}>
+      <CameraView 
+        style={styles.camera} 
+        facing="back" 
+        ref={cameraRef} 
+        enableTorch={torch}
+        barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+        onBarcodeScanned={(result) => {
+          if (result.data && (result.data.includes('aade') || result.data.startsWith('http'))) {
+            setScannedAadeUrl(result.data);
+          }
+        }}
+      >
         <View style={styles.overlay}>
           <TouchableOpacity style={styles.torchButton} onPress={() => setTorch(!torch)}>
             <Text style={styles.torchText}>{torch ? '💡 Flash ON' : '🔦 Flash OFF'}</Text>

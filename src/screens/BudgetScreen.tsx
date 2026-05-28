@@ -129,7 +129,7 @@ export default function BudgetScreen() {
 
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Total Spending Progress</Text>
-          <Text style={styles.spentText}>${spent.toFixed(2)} spent</Text>
+          <Text style={styles.spentText}>€{spent.toFixed(2)} spent</Text>
           
           <View style={styles.progressBarBg}>
             <View style={[styles.progressBarFill, { width: `${progress * 100}%`, backgroundColor: progressColor }]} />
@@ -142,10 +142,11 @@ export default function BudgetScreen() {
 
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Category Budgets</Text>
-          {Object.keys(categorySpent).length === 0 && (
-            <Text style={styles.subtitle}>No categorized spending yet.</Text>
-          )}
-          {Object.keys(categorySpent).map((cat) => {
+          {(() => {
+            const defaultCats = ['Τρόφιμα', 'Ένδυση', 'Μεταφορές', 'Διασκέδαση', 'Λογαριασμοί', 'Άλλο'];
+            const allCats = Array.from(new Set([...defaultCats, ...Object.keys(categorySpent), ...Object.keys(categoryBudgets)]));
+            
+            return allCats.map((cat) => {
             const catSpentAmount = categorySpent[cat] || 0;
             const catBudgetAmount = categoryBudgets[cat] || 0; // 0 means no limit set yet
             
@@ -161,7 +162,7 @@ export default function BudgetScreen() {
                 <View style={styles.catHeader}>
                   <Text style={styles.catName}>{cat}</Text>
                   <Text style={styles.catAmount}>
-                    ${catSpentAmount.toFixed(2)} {catBudgetAmount > 0 ? `/ $${catBudgetAmount.toFixed(2)}` : ''}
+                    €{catSpentAmount.toFixed(2)} {catBudgetAmount > 0 ? `/ €${catBudgetAmount.toFixed(2)}` : ''}
                   </Text>
                 </View>
 
@@ -196,7 +197,7 @@ export default function BudgetScreen() {
                 )}
               </View>
             );
-          })}
+          })})()}
         </View>
 
         <View style={styles.card}>
@@ -208,7 +209,7 @@ export default function BudgetScreen() {
               <View key={receipt.id} style={styles.receiptItem}>
                 <View style={styles.receiptHeader}>
                   <Text style={styles.storeName}>{receipt.storeName}</Text>
-                  <Text style={styles.receiptAmount}>${receipt.totalAmount?.toFixed(2)}</Text>
+                  <Text style={styles.receiptAmount}>€{receipt.totalAmount?.toFixed(2)}</Text>
                 </View>
                 <Text style={styles.ecoScore}>Eco-Score: {receipt.ecoScore}</Text>
                 

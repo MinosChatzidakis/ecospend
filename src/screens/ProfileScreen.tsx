@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Alert, ScrollView, ActivityIndicator, ImageBackground } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, ScrollView, ActivityIndicator, ImageBackground, Switch } from 'react-native';
 import { signOut } from 'firebase/auth';
 import { auth, db } from '../services/firebase';
 import { useAuth } from '../contexts/AuthContext';
@@ -55,6 +55,19 @@ export default function ProfileScreen() {
     }
   };
 
+  const toggleHostMode = async (value: boolean) => {
+    if (!user) return;
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        isHostMode: value
+      });
+      setProfile((prev: any) => ({ ...prev, isHostMode: value }));
+    } catch (error) {
+      console.error("Error toggling host mode", error);
+      Alert.alert("Error", "Failed to update Host Mode status.");
+    }
+  };
+
   const handleClearHistory = () => {
     Alert.alert('Clear History', 'Reset all your scans and points for testing?', [
       { text: 'Cancel', style: 'cancel' },
@@ -105,6 +118,17 @@ export default function ProfileScreen() {
         <View style={styles.avatarContainer}><Text style={styles.avatar}>👤</Text></View>
         <Text style={styles.email}>{user?.email}</Text>
         <Text style={styles.rankBadge}>{getRank(profile?.ecoPoints || 0)}</Text>
+      </View>
+
+      {/* Host Mode Toggle */}
+      <View style={styles.hostModeCard}>
+        <Text style={styles.hostModeTitle}>Επαγγελματικό Έξοδο (Host Mode)</Text>
+        <Switch 
+          value={profile?.isHostMode || false} 
+          onValueChange={toggleHostMode}
+          trackColor={{ false: "#CBD5E0", true: "#38A169" }}
+          thumbColor={"#FFFFFF"}
+        />
       </View>
 
       {/* Rewards Section */}
@@ -176,5 +200,8 @@ const styles = StyleSheet.create({
   logoutText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
   
   clearButton: { marginTop: 15, padding: 10, width: '100%', alignItems: 'center' },
-  clearText: { color: '#A0AEC0', fontWeight: 'bold', fontSize: 14, textDecorationLine: 'underline' }
+  clearText: { color: '#A0AEC0', fontWeight: 'bold', fontSize: 14, textDecorationLine: 'underline' },
+  
+  hostModeCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#2D3748', width: '100%', borderRadius: 15, padding: 15, marginBottom: 20, shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 5, elevation: 3 },
+  hostModeTitle: { fontSize: 14, fontWeight: 'bold', color: '#FFFFFF', flex: 1 },
 });
