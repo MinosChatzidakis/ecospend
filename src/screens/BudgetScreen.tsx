@@ -11,6 +11,11 @@ export default function BudgetScreen() {
   const [spent, setSpent] = useState(0);
   const [newBudget, setNewBudget] = useState('');
   const [receipts, setReceipts] = useState<any[]>([]);
+  
+  const [categoryBudgets, setCategoryBudgets] = useState<Record<string, number>>({});
+  const [categorySpent, setCategorySpent] = useState<Record<string, number>>({});
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [newCategoryBudget, setNewCategoryBudget] = useState('');
 
   useEffect(() => {
     fetchData();
@@ -24,17 +29,33 @@ export default function BudgetScreen() {
       if (userSnap.exists()) {
         setBudget(userSnap.data().monthlyBudget || 500);
         setSpent(userSnap.data().totalSpentThisMonth || 0);
+        setCategoryBudgets(userSnap.data().categoryBudgets || {});
       }
 
-      // Fetch recent receipts
+      // Fetch recent receipts for the activity feed
       const q = query(
         collection(db, 'users', user.uid, 'receipts'),
         orderBy('date', 'desc'),
-        limit(5)
+        limit(20)
       );
       const querySnapshot = await getDocs(q);
       const fetchedReceipts = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setReceipts(fetchedReceipts);
+      setReceipts(fetchedReceipts.slice(0, 5)); // Keep only 5 for activity feed
+      
+      // Calculate category spending from the fetched receipts (representing this month ideally)
+      let catSpent: Record<string, number> = {};
+      for (const receiptDoc of querySnapshot.docs) {
+        const itemsRef = collection(receiptDoc.ref, 'scanned_items');
+        const itemsSnap = await getDocs(itemsRef);
+        itemsSnap.forEach(itemDoc => {
+          const data = itemDoc.data();
+          const cat = data.category || 'Other';
+          const price = data.price || 0;
+          catSpent[cat] = (catSpent[cat] || 0) + price;
+        });
+      }
+      setCategorySpent(catSpent);
+
     } catch (error) {
       console.error("Error fetching budget data:", error);
     } finally {
@@ -54,6 +75,23 @@ export default function BudgetScreen() {
       setNewBudget('');
     } catch (error) {
       console.error("Error updating budget:", error);
+    }
+  };
+
+  const handleUpdateCategoryBudget = async () => {
+    if (!user || !selectedCategory || !newCategoryBudget) return;
+    const parsedBudget = parseFloat(newCategoryBudget);
+    if (isNaN(parsedBudget)) return;
+
+    try {
+      const userRef = doc(db, 'users', user.uid);
+      const updatedCatBudgets = { ...categoryBudgets, [selectedCategory]: parsedBudget };
+      await updateDoc(userRef, { categoryBudgets: updatedCatBudgets });
+      setCategoryBudgets(updatedCatBudgets);
+      setNewCategoryBudget('');
+      setSelectedCategory(null);
+    } catch (error) {
+      console.error("Error updating category budget:", error);
     }
   };
 
@@ -90,7 +128,7 @@ export default function BudgetScreen() {
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>Spending Progress</Text>
+          <Text style={styles.cardTitle}>Total Spending Progress</Text>
           <Text style={styles.spentText}>${spent.toFixed(2)} spent</Text>
           
           <View style={styles.progressBarBg}>
@@ -100,6 +138,65 @@ export default function BudgetScreen() {
           {progress > 0.9 && (
             <Text style={styles.alertText}>⚠️ You are nearing your monthly limit!</Text>
           )}
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Category Budgets</Text>
+          {Object.keys(categorySpent).length === 0 && (
+            <Text style={styles.subtitle}>No categorized spending yet.</Text>
+          )}
+          {Object.keys(categorySpent).map((cat) => {
+            const catSpentAmount = categorySpent[cat] || 0;
+            const catBudgetAmount = categoryBudgets[cat] || 0; // 0 means no limit set yet
+            
+            let catProgress = 0;
+            let catProgressColor = '#38A169';
+            if (catBudgetAmount > 0) {
+              catProgress = Math.min(catSpentAmount / catBudgetAmount, 1);
+              catProgressColor = catProgress > 0.9 ? '#E53E3E' : catProgress > 0.7 ? '#DD6B20' : '#38A169';
+            }
+
+            return (
+              <View key={cat} style={styles.catItem}>
+                <View style={styles.catHeader}>
+                  <Text style={styles.catName}>{cat}</Text>
+                  <Text style={styles.catAmount}>
+                    ${catSpentAmount.toFixed(2)} {catBudgetAmount > 0 ? `/ $${catBudgetAmount.toFixed(2)}` : ''}
+                  </Text>
+                </View>
+
+                {catBudgetAmount > 0 ? (
+                  <View style={styles.progressBarBg}>
+                    <View style={[styles.progressBarFill, { width: `${catProgress * 100}%`, backgroundColor: catProgressColor }]} />
+                  </View>
+                ) : (
+                  <Text style={styles.noBudgetLabel}>No limit set.</Text>
+                )}
+
+                {selectedCategory === cat ? (
+                  <View style={styles.catInputRow}>
+                    <TextInput
+                      style={styles.catInput}
+                      placeholder={`Budget for ${cat}`}
+                      keyboardType="numeric"
+                      value={newCategoryBudget}
+                      onChangeText={setNewCategoryBudget}
+                    />
+                    <TouchableOpacity style={styles.catUpdateBtn} onPress={handleUpdateCategoryBudget}>
+                      <Text style={styles.updateBtnText}>Save</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.catCancelBtn} onPress={() => setSelectedCategory(null)}>
+                      <Text style={styles.updateBtnText}>Cancel</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <TouchableOpacity onPress={() => setSelectedCategory(cat)}>
+                    <Text style={styles.setLimitText}>{catBudgetAmount > 0 ? 'Edit Limit' : 'Set Limit'}</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            );
+          })}
         </View>
 
         <View style={styles.card}>
@@ -202,5 +299,17 @@ const styles = StyleSheet.create({
     borderLeftColor: '#38A169',
   },
   swapTitle: { fontSize: 13, fontWeight: 'bold', color: '#276749', marginBottom: 3 },
-  swapText: { fontSize: 13, color: '#2F855A' }
+  swapText: { fontSize: 13, color: '#2F855A' },
+  
+  catItem: { marginBottom: 20, borderBottomWidth: 1, borderBottomColor: '#EDF2F7', paddingBottom: 15 },
+  catHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5 },
+  catName: { fontSize: 16, fontWeight: '600', color: '#2D3748' },
+  catAmount: { fontSize: 16, fontWeight: 'bold', color: '#4A5568' },
+  noBudgetLabel: { fontSize: 12, color: '#A0AEC0', fontStyle: 'italic', marginTop: 5 },
+  setLimitText: { color: '#3182CE', fontSize: 13, fontWeight: '600', marginTop: 8 },
+  
+  catInputRow: { flexDirection: 'row', alignItems: 'center', marginTop: 10 },
+  catInput: { flex: 1, height: 35, borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 6, paddingHorizontal: 10, marginRight: 8, fontSize: 13 },
+  catUpdateBtn: { backgroundColor: '#38A169', height: 35, justifyContent: 'center', paddingHorizontal: 12, borderRadius: 6, marginRight: 8 },
+  catCancelBtn: { backgroundColor: '#A0AEC0', height: 35, justifyContent: 'center', paddingHorizontal: 12, borderRadius: 6 }
 });

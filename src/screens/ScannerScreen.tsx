@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert, ScrollView } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as ImageManipulator from 'expo-image-manipulator';
 import { doc, collection, addDoc, updateDoc, increment, getDocs, getDoc } from 'firebase/firestore';
 import { db } from '../services/firebase';
 import { useAuth } from '../contexts/AuthContext';
@@ -46,12 +47,26 @@ export default function ScannerScreen({ navigation }: any) {
       setExtractedText('Capturing image...');
       
       // Reverting back to quality 0.5 and OCREngine 2 which worked better originally
-      const photo = await cameraRef.current.takePictureAsync({ base64: true, quality: 0.5 });
+      const photo = await cameraRef.current.takePictureAsync({ quality: 0.5 });
+      
+      setExtractedText('Cropping scan area...');
+      
+      // Calculate crop dimensions for the 80%x60% centered green frame
+      const cropWidth = photo.width * 0.8;
+      const cropHeight = photo.height * 0.6;
+      const originX = photo.width * 0.1;
+      const originY = photo.height * 0.2;
+      
+      const croppedPhoto = await ImageManipulator.manipulateAsync(
+        photo.uri,
+        [{ crop: { originX, originY, width: cropWidth, height: cropHeight } }],
+        { compress: 0.5, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+      );
       
       setExtractedText('Analyzing receipt with Free OCR...');
       
       const formData = new FormData();
-      formData.append('base64Image', `data:image/jpeg;base64,${photo.base64}`);
+      formData.append('base64Image', `data:image/jpeg;base64,${croppedPhoto.base64}`);
       formData.append('apikey', 'helloworld'); 
       formData.append('OCREngine', '2'); 
 
@@ -104,7 +119,8 @@ export default function ScannerScreen({ navigation }: any) {
     let earnedPoints = 0;
     const alreadyMatched = new Set<string>();
 
-    for (const originalLine of lines) {
+    for (let i = 0; i < lines.length; i++) {
+      const originalLine = lines[i];
       const line = stripAccents(originalLine);
       
       // --- STEP 1: Try barcode match (first 6 digits on the line) ---
@@ -135,8 +151,28 @@ export default function ScannerScreen({ navigation }: any) {
       if (!bestMatch) continue;
       alreadyMatched.add(bestMatch.name);
 
-      // Always use DB price
-      const finalPrice = bestMatch.price;
+      // --- STEP 3: Detect Quantity Multiplier ---
+      // Matches "2X", "2 X", "2ΤΜΧ", "2 TMX", "2 TEM", "2,000 TEM", etc.
+      let quantity = 1;
+      
+      // 1. Check current line
+      let qtyMatch = originalLine.match(/\b([1-9](?:,\d+)?)\s*(?:X|ΤΜΧ|TMX|ΤΕΜ|TEM)\b/i);
+      
+      // 2. Check next line if not found
+      if (!qtyMatch && i + 1 < lines.length) {
+          qtyMatch = lines[i+1].match(/\b([1-9](?:,\d+)?)\s*(?:X|ΤΜΧ|TMX|ΤΕΜ|TEM)\b/i);
+      }
+
+      if (qtyMatch) {
+          // Parse "2,000" or "2" 
+          quantity = Math.round(parseFloat(qtyMatch[1].replace(',', '.')));
+      }
+
+      // Always use DB price, multiplied by quantity
+      const finalPrice = bestMatch.price * quantity;
+      
+      // Show quantity in the name if > 1
+      const displayName = quantity > 1 ? `${quantity}x ${bestMatch.name}` : bestMatch.name;
 
       // Find a real swap suggestion from the DB: same category, better eco rating
       const ratingOrder = ['A', 'B', 'C', 'D'];
@@ -154,7 +190,7 @@ export default function ScannerScreen({ navigation }: any) {
       }
 
       matchedItems.push({
-        name: bestMatch.name,
+        name: displayName,
         price: finalPrice,
         category: bestMatch.category,
         ecoRating: bestMatch.ecoRating,
@@ -162,9 +198,9 @@ export default function ScannerScreen({ navigation }: any) {
       });
       calculatedTotal += finalPrice;
       
-      // Award EcoPoints!
-      if (bestMatch.ecoRating === 'A') earnedPoints += 50;
-      else if (bestMatch.ecoRating === 'B') earnedPoints += 20;
+      // Award EcoPoints! multiplied by quantity
+      if (bestMatch.ecoRating === 'A') earnedPoints += (50 * quantity);
+      else if (bestMatch.ecoRating === 'B') earnedPoints += (20 * quantity);
     }
 
     if (matchedItems.length === 0) {
@@ -182,6 +218,7 @@ export default function ScannerScreen({ navigation }: any) {
     const receiptRef = await addDoc(collection(db, 'users', user.uid, 'receipts'), {
       storeName: 'Scanned Supermarket',
       totalAmount: calculatedTotal,
+      pointsEarned: earnedPoints,
       date: new Date(),
       ecoScore: matchedItems.some(i => i.ecoRating === 'D' || i.ecoRating === 'C') ? 'C' : 'A'
     });
@@ -226,6 +263,7 @@ export default function ScannerScreen({ navigation }: any) {
         const receiptRef = await addDoc(collection(db, 'users', user.uid, 'receipts'), {
           storeName: 'Scanned Supermarket',
           totalAmount: 7.50,
+          pointsEarned: 20,
           date: new Date(),
           ecoScore: 'C'
         });

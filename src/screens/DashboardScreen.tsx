@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, StyleSheet, Dimensions, ActivityIndicator, ScrollView, ImageBackground } from 'react-native';
-import { PieChart } from 'react-native-chart-kit';
+import { View, Text, StyleSheet, Dimensions, ActivityIndicator, ScrollView, ImageBackground, TouchableOpacity, Modal } from 'react-native';
+import { PieChart, LineChart, BarChart } from 'react-native-chart-kit';
 import { useAuth } from '../contexts/AuthContext';
 import { db } from '../services/firebase';
 import { doc, getDoc, collection, getDocs, query, orderBy } from 'firebase/firestore';
@@ -14,6 +14,15 @@ export default function DashboardScreen() {
   const [chartData, setChartData] = useState<any[]>([]);
   const [history, setHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [pointsModalVisible, setPointsModalVisible] = useState(false);
+  const [pointsHistoryChart, setPointsHistoryChart] = useState<any>({
+    labels: ['Start'],
+    datasets: [{ data: [0] }]
+  });
+  const [spendingHistoryChart, setSpendingHistoryChart] = useState<any>({
+    labels: ['Start'],
+    datasets: [{ data: [0] }]
+  });
 
   useFocusEffect(
     useCallback(() => {
@@ -54,6 +63,37 @@ export default function DashboardScreen() {
               ...receiptData,
               items: itemsList
             });
+          }
+
+          // Build Points & Spending History Arrays (grouping by Month)
+          const pointsByMonth: Record<string, number> = {};
+          const spendingByMonth: Record<string, number> = {};
+          
+          for (const r of loadedHistory) {
+            if (r.date && r.date.toDate) {
+              const d = r.date.toDate();
+              const month = `${d.getMonth() + 1}/${d.getFullYear().toString().slice(-2)}`; // e.g., 5/26
+              pointsByMonth[month] = (pointsByMonth[month] || 0) + (r.pointsEarned || 0);
+              spendingByMonth[month] = (spendingByMonth[month] || 0) + (r.totalAmount || 0);
+            }
+          }
+
+          // Sort months properly or just use as-is if ordered by desc in query
+          // Let's reverse them so chronological order is left-to-right on the chart
+          const sortedMonths = Object.keys(pointsByMonth).reverse();
+          
+          if (sortedMonths.length > 0) {
+            setPointsHistoryChart({
+              labels: sortedMonths,
+              datasets: [{ data: sortedMonths.map(m => pointsByMonth[m]) }]
+            });
+            setSpendingHistoryChart({
+              labels: sortedMonths,
+              datasets: [{ data: sortedMonths.map(m => spendingByMonth[m]) }]
+            });
+          } else {
+            setPointsHistoryChart({ labels: ['This Month'], datasets: [{ data: [userData?.ecoPoints || 0] }] });
+            setSpendingHistoryChart({ labels: ['This Month'], datasets: [{ data: [userData?.totalSpentThisMonth || 0] }] });
           }
 
           // Format data for react-native-chart-kit
@@ -116,19 +156,20 @@ export default function DashboardScreen() {
             {userData?.totalSpentThisMonth > 0 ? (userData?.ecoScoreAvg || 'B') : '-'}
           </Text>
         </View>
-        <View style={[styles.card, styles.halfCard]}>
-          <Text style={styles.cardTitle}>Eco-Points</Text>
+        <TouchableOpacity style={[styles.card, styles.halfCard]} onPress={() => setPointsModalVisible(true)}>
+          <Text style={styles.cardTitle}>Eco-Points ℹ️</Text>
           <Text style={styles.scoreText}>{userData?.ecoPoints || 0}</Text>
-        </View>
+          <Text style={{fontSize: 10, color: '#A0AEC0', marginTop: 5}}>Tap for history</Text>
+        </TouchableOpacity>
       </View>
 
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Monthly Budget</Text>
+      <TouchableOpacity style={styles.card} onPress={() => navigation.navigate('Budget')}>
+        <Text style={styles.cardTitle}>Monthly Budget ℹ️</Text>
         <Text style={styles.budgetAmount}>
           ${userData?.totalSpentThisMonth?.toFixed(2) || '0.00'} / ${userData?.monthlyBudget?.toFixed(2) || '500.00'}
         </Text>
-        <Text style={styles.subtitle}>Keep an eye on your limits</Text>
-      </View>
+        <Text style={styles.subtitle}>Tap to set category budgets</Text>
+      </TouchableOpacity>
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Spending by Category</Text>
@@ -143,6 +184,26 @@ export default function DashboardScreen() {
           backgroundColor={"transparent"}
           paddingLeft={"10"}
           absolute
+        />
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Spending Over Time</Text>
+        <BarChart
+          data={spendingHistoryChart}
+          width={screenWidth - 80}
+          height={220}
+          yAxisLabel="$"
+          yAxisSuffix=""
+          chartConfig={{
+            backgroundColor: "#fff",
+            backgroundGradientFrom: "#fff",
+            backgroundGradientTo: "#fff",
+            decimalPlaces: 0,
+            color: (opacity = 1) => `rgba(229, 62, 62, ${opacity})`,
+            labelColor: (opacity = 1) => `rgba(0, 0, 0, ${opacity})`,
+          }}
+          style={{ marginVertical: 8, borderRadius: 16 }}
         />
       </View>
 
@@ -200,6 +261,44 @@ export default function DashboardScreen() {
         )}
       </View>
       </ScrollView>
+
+      {/* Points History Modal */}
+      <Modal visible={pointsModalVisible} animationType="slide" transparent={true}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Eco-Points History</Text>
+            <Text style={styles.modalSubtitle}>See how your sustainable choices have paid off over time!</Text>
+            
+            <LineChart
+              data={pointsHistoryChart}
+              width={screenWidth - 60}
+              height={220}
+              yAxisLabel=""
+              yAxisSuffix="pt"
+              chartConfig={{
+                backgroundColor: "#F0FFF4",
+                backgroundGradientFrom: "#F0FFF4",
+                backgroundGradientTo: "#C6F6D5",
+                decimalPlaces: 0,
+                color: (opacity = 1) => `rgba(56, 161, 105, ${opacity})`,
+                labelColor: (opacity = 1) => `rgba(39, 103, 73, ${opacity})`,
+                propsForDots: {
+                  r: "6",
+                  strokeWidth: "2",
+                  stroke: "#276749"
+                }
+              }}
+              bezier
+              style={{ marginVertical: 20, borderRadius: 16 }}
+            />
+            
+            <TouchableOpacity style={styles.closeModalBtn} onPress={() => setPointsModalVisible(false)}>
+              <Text style={styles.closeModalText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
     </ImageBackground>
   );
 }
@@ -236,5 +335,12 @@ const styles = StyleSheet.create({
   itemEco: { fontSize: 12, fontWeight: 'bold', width: 20, textAlign: 'center' },
   green: { color: '#38A169' },
   red: { color: '#E53E3E' },
-  itemPrice: { fontSize: 13, color: '#2D3748', fontWeight: '500' }
+  itemPrice: { fontSize: 13, color: '#2D3748', fontWeight: '500' },
+  
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+  modalContent: { width: '90%', backgroundColor: '#fff', borderRadius: 20, padding: 20, alignItems: 'center', shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 10, elevation: 5 },
+  modalTitle: { fontSize: 22, fontWeight: 'bold', color: '#276749', marginBottom: 10 },
+  modalSubtitle: { fontSize: 14, color: '#4A5568', textAlign: 'center', marginBottom: 10 },
+  closeModalBtn: { backgroundColor: '#38A169', paddingVertical: 12, paddingHorizontal: 30, borderRadius: 25, marginTop: 10 },
+  closeModalText: { color: '#fff', fontWeight: 'bold', fontSize: 16 }
 });
